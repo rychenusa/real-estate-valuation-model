@@ -1,0 +1,223 @@
+---
+title: "M148 Data"
+author: "Drew Suarez"
+date: "2025-01-26"
+output: html_document
+---
+
+# Data Cleaning and Preprocessing
+
+
+### Loading in original dataset
+```{r}
+library(dplyr)
+
+apts <- read.csv("apartments.csv")
+apts <- apts[apts$state %in% c("CA", "AZ", "OR", "WA", "NV"), ]
+apts <- apts[!duplicated(apts), ]
+nrow(apts)
+```
+
+### Removing unnecessary columns and creating an average unemployment column
+```{r}
+# Create a new column with the average of  unemployment rates
+apts$unemployment_rate_avg <- rowMeans(apts[, c("Unemployment_rate_2017", "Unemployment_rate_2018", "Unemployment_rate_2019")], na.rm = TRUE)
+
+# Remove unneccessary 
+apts <- apts %>% select(-Unemployment_rate_2016, -Unemployment_rate_2017, -Unemployment_rate_2018, -Unemployment_rate_2019, -Unemployment_rate_2020, -Unemployment_rate_2021, -Unemployment_rate_2022, -Unnamed..0, -fee, -title, -body, -currency, -price_type, -address, -source, -time, -price_display, -Med_HH_Income_Percent_of_State_Total_2021)
+
+```
+
+```{r}
+
+
+california <- read.csv("California_Incorporated_Cities.csv")
+california <- california[, 2:3]
+colnames(california) <- c('county', 'cityname')
+california$state <- "CA"
+california <- california[, c("cityname", "county", "state")]
+# Remove "County" from the county column
+california$county <- sub(" County$", "", california$county)
+
+washington <- read.csv("Washington_State_Cities_and_Counties.csv")
+washington <- washington[, c(1, 3)]
+colnames(washington) <- c('county', 'cityname')
+washington$state <- "WA"
+washington <- washington[, c("cityname", "county", "state")]
+
+oregon <- read.csv("Oregon_City-Zipcode_Counties.csv")
+oregon <- oregon[, c(2, 4)]
+colnames(oregon) <- c('cityname', 'county')
+oregon$state <- "OR"
+
+library(dplyr)
+library(stringr)
+arizona <- read.csv("arizona.csv")
+arizona <- arizona[, c(1, 6)]
+colnames(arizona) <- c('cityname', 'county')
+
+```
+
+```{r}
+
+# Arizona cleaning steps
+
+# Convert strings to lowercase except the first letter
+arizona <- arizona %>%
+  mutate(
+    cityname = str_to_title(tolower(cityname)),  # str_to_title converts to Title Case
+    county = str_to_title(tolower(county)),
+    county = str_extract(county, "^[^/]+")
+  )
+
+arizona$state <- "AZ"
+
+```
+
+```{r}
+# Nevada Cleaning steps
+
+nevada <- read.csv("nevada.csv")
+nevada <- nevada[, 1:2]
+colnames(nevada)[2] <- "county_fips"
+nev_count <- read.csv("nevada_counties.csv")
+nev_count <- nev_count[, 1:2]
+
+nevada <- merge(nevada, nev_count, by = "county_fips", all.x = TRUE)
+nevada <- nevada[, c(2, 3)]
+colnames(nevada) <- c('cityname', 'county')
+nevada$state <- "NV"
+
+```
+
+```{r}
+
+# Combine cities and county information for all states
+
+combined <- unique(rbind(california, washington, oregon, arizona, nevada))
+
+```
+
+```{r}
+
+# Remove duplicates in counties based on cityname and state
+counties_unique <- combined %>%
+  distinct(cityname, state, .keep_all = TRUE)
+
+```
+
+```{r}
+# Reading in 
+
+unemployment <- read.csv("WC_unemployment-2.csv")
+temperatures <- read.csv("wc_temperatures_fixed.csv")
+demo <- read.csv("wc_demographic_data.csv")
+crime <- read.csv("crime_rates_by_city.csv")
+counties <- counties_unique
+risk <- read.csv("risk.csv")
+
+```
+
+
+```{r}
+# Renaming column names to match
+
+colnames(crime) <- c('state', 'county', 'cityname', 'violent_crime_rate', 'property_crime_rate')
+colnames(demo)[colnames(demo) == "city"] <- "cityname"
+colnames(demo)[colnames(demo) == "state_id"] <- "state"
+colnames(demo)[colnames(demo) == "county_name"] <- "county"
+colnames(temperatures)[colnames(temperatures) == "Name"] <- "county"
+colnames(temperatures)[colnames(temperatures) == "X1901.2000.Mean"] <- "avg_temp"
+colnames(unemployment)[colnames(unemployment) == "State"] <- "state"
+colnames(unemployment)[colnames(unemployment) == "County_Name"] <- "county"
+
+```
+
+```{r}
+
+new_frame <- apts %>%
+  left_join(counties, by = c("cityname", "state"))
+
+```
+
+```{r}
+
+crime <- crime %>%
+  select(-c('county'))
+
+new_frame <- new_frame %>%
+  left_join(crime, by = c("cityname", 'state'))
+
+# Impute missing values for crime data using averages of county
+new_frame <- new_frame %>%
+  group_by(county) %>%
+  mutate(
+    violent_crime_rate = ifelse(is.na(violent_crime_rate), 
+                                mean(violent_crime_rate, na.rm = TRUE), 
+                                violent_crime_rate),
+    property_crime_rate = ifelse(is.na(property_crime_rate), 
+                                 mean(property_crime_rate, na.rm = TRUE), 
+                                 property_crime_rate)
+  ) %>%
+  ungroup()  # To remove grouping after imputation
+
+```
+
+```{r}
+
+
+# Aggregate demographic data by city and state (averaging numeric columns)
+demographics_avg <- demo %>%
+  group_by(cityname, state) %>%
+  summarize(across(where(is.numeric), mean, na.rm = TRUE), .groups = "drop")
+
+# Remove specific columns
+demographics_avg <- demographics_avg %>%
+  select(-c(3,4,5,8))
+
+
+new_frame <- new_frame %>%
+  left_join(demographics_avg, by = c("cityname", "state"))
+
+```
+
+```{r}
+
+# Remove unnecessary columns
+unemployment <- unemployment %>%
+  select(-c(1,4))
+
+# Remove trailing and leading spaces
+unemployment$county <- str_trim(unemployment$county)
+
+new_frame <- new_frame %>%
+  left_join(unemployment, by = c("county", "state"))
+
+```
+
+```{r}
+
+new_frame <- new_frame %>%
+  left_join(risk, by = c("county", "state"))
+
+```
+
+```{r}
+
+# Create a vector of state names and abbreviations
+temperatures <- temperatures[temperatures$State %in% c("California", "Oregon", "Nevada", "Arizona", "Washington"), ]
+state_names <- c("California", "Oregon", "Nevada", "Arizona", "Washington")
+state_abbreviations <- c("CA", "OR", "NV", "AZ", "WA")
+
+# Add the abbreviation column to your data
+temperatures$state <- state_abbreviations[match(temperatures$State, state_names)]
+
+temperatures <- temperatures %>%
+  select(c(2,7,8))
+
+new_frame <- new_frame %>%
+  left_join(temperatures, by = c("county", "state"))
+
+write.csv(new_frame, "merged.csv")
+```
+
